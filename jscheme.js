@@ -93,49 +93,6 @@ function parse(input) {
   return result;
 }
 
-// Evaluator function
-function evaluate(expr, env) {
-  if (typeof expr === 'string') {
-    return env.lookup(expr);
-  }
-  if (!(expr instanceof Cons)) {
-    return expr; // Self-evaluating expressions (numbers, booleans, etc.)
-  }
-
-  const op = expr.car;
-  const args = expr.cdr;
-
-  switch (op) {
-    case 'quote':
-      return args.car;
-    case 'if':
-      const condition = evaluate(args.car, env);
-      return condition ? evaluate(args.cdr.car, env) : evaluate(args.cdr.cdr.car, env);
-    case 'lambda':
-      return function(...params) {
-        const newEnv = new Environment(env);
-        let paramList = args.car;
-        params.forEach(param => {
-          newEnv.define(paramList.car, param);
-          paramList = paramList.cdr;
-        });
-        return evaluate(args.cdr.car, newEnv);
-      };
-    case 'define':
-      env.define(args.car, evaluate(args.cdr.car, env));
-      return undefined;
-    default:
-      const proc = evaluate(op, env);
-      const evaluatedArgs = [];
-      let argList = args;
-      while (argList instanceof Cons) {
-        evaluatedArgs.push(evaluate(argList.car, env));
-        argList = argList.cdr;
-      }
-      return proc(...evaluatedArgs);
-  }
-}
-
 // Helper function to convert linked list to array (for printing)
 function linkedListToArray(list) {
   const result = [];
@@ -159,7 +116,86 @@ function printExpr(expr) {
   }
 }
 
-// REPL function
+// Thunk class to represent delayed computations
+class Thunk {
+  constructor(func) {
+    this.func = func;
+  }
+}
+
+// Trampoline function to handle tail calls
+function trampoline(result) {
+  while (result instanceof Thunk) {
+    result = result.func();
+  }
+  return result;
+}
+
+// Modified evaluate function with tail call optimization
+function evaluate(expr, env) {
+  return trampoline(evaluateWithTailCall(expr, env));
+}
+
+function evaluateWithTailCall(expr, env) {
+  if (typeof expr === 'string') {
+    return env.lookup(expr);
+  }
+  if (!(expr instanceof Cons)) {
+    return expr; // Self-evaluating expressions (numbers, booleans, etc.)
+  }
+
+  const op = expr.car;
+  const args = expr.cdr;
+
+  switch (op) {
+    case 'quote':
+      return args.car;
+    case 'if':
+      return new Thunk(() => {
+        const condition = evaluate(args.car, env);
+        return evaluateWithTailCall(condition ? args.cdr.car : args.cdr.cdr.car, env);
+      });
+    case 'lambda':
+      return function(...params) {
+        const newEnv = new Environment(env);
+        let paramList = args.car;
+        params.forEach(param => {
+          newEnv.define(paramList.car, param);
+          paramList = paramList.cdr;
+        });
+        return evaluateWithTailCall(args.cdr.car, newEnv);
+      };
+    case 'define':
+      env.define(args.car, evaluate(args.cdr.car, env));
+      return undefined;
+    case 'begin':
+      let result;
+      let expressions = args;
+      while (expressions instanceof Cons) {
+        if (expressions.cdr === null) {
+          // Tail position in begin
+          return new Thunk(() => evaluateWithTailCall(expressions.car, env));
+        }
+        result = evaluate(expressions.car, env);
+        expressions = expressions.cdr;
+      }
+      return result;
+    default:
+      const proc = evaluate(op, env);
+      const evaluatedArgs = [];
+      let argList = args;
+      while (argList instanceof Cons) {
+        evaluatedArgs.push(evaluate(argList.car, env));
+        argList = argList.cdr;
+      }
+      if (typeof proc === 'function') {
+        return new Thunk(() => proc(...evaluatedArgs));
+      }
+      throw new Error(`${op} is not a function`);
+  }
+}
+
+// REPL function (modified to use the new evaluate function)
 function repl() {
   const globalEnv = new Environment();
   // Define basic operations
